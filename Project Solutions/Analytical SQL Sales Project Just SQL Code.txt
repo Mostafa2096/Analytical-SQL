@@ -1,0 +1,142 @@
+Q1)>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
+SELECT 
+    DISTINCT Customer_ID, 
+    ROUND(Price * Quantity) AS transaction_amount,
+    ROUND(AVG(Price * Quantity) OVER (PARTITION BY Customer_ID)) AS total_sales
+FROM 
+    tableRetail
+ORDER BY transaction_amount DESC;
+
+------------
+
+SELECT distinct MONTH(STR_TO_DATE(SUBSTRING_INDEX(invoicedate, ' ', 1), '%m/%d/%Y')) AS extracted_month,
+
+round(avg(price*Quantity) over(partition by MONTH(STR_TO_DATE(SUBSTRING_INDEX(invoicedate, ' ', 1), '%m/%d/%Y')))) avg_sale,
+
+round(sum(price*Quantity) over(partition by MONTH(STR_TO_DATE(SUBSTRING_INDEX(invoicedate, ' ', 1), '%m/%d/%Y')))) total_sale
+
+FROM tableretail
+-------------
+
+SELECT 
+    DISTINCT StockCode,
+    ROUND(SUM(Quantity) OVER (PARTITION BY StockCode)) AS total_sale
+FROM 
+    tableRetail
+ORDER BY 
+    total_sale DESC;
+
+-------------
+
+SELECT 
+    DISTINCT StockCode,
+    total_sale
+FROM 
+    (SELECT 
+        StockCode,
+        SUM(Quantity) OVER (PARTITION BY StockCode) AS total_sale
+    FROM 
+        tableRetail) AS subquery
+WHERE 
+    total_sale < 10
+ORDER BY 
+    total_sale ASC;
+
+--------------
+
+SELECT distinct (STR_TO_DATE(invoicedate, '%m/%d/%Y')) AS extracted_day,
+       round(price*Quantity ,2) sales,
+       round(avg(price*Quantity) over()) avg_daily_sales
+FROM tableretail;
+
+
+Q2)>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
+with t1 as (
+(select distinct count(*) over(partition by Customer_ID) frequency, customer_id,
+sum(price*Quantity) over(partition by Customer_ID) total_customer_sale,
+max(STR_TO_DATE(SUBSTRING_INDEX(InvoiceDate, ' ', 1), '%m/%d/%Y' )) over(partition by customer_id) recent_purchase
+from tableretail)
+),
+t2 as (
+select distinct customer_id, STR_TO_DATE('2011/29/12', '%Y/%d/%m') - recent_purchase recency, frequency,
+round(percent_rank() over(order by total_customer_sale),2) monetary,
+ntile(5) over(order by STR_TO_DATE('2011/29/12', '%Y/%d/%m') - recent_purchase desc)  r_score,
+ntile(5) over(order by frequency) f_score,
+round(((round(percent_rank() over(order by total_customer_sale),2)+.01)*5 + ntile(5) over(order by frequency))/2) fm_score
+from  t1 )
+
+select Customer_ID, recency, frequency, monetary, r_score, fm_score,
+case when (r_score = 5 and fm_score = 5) or (r_score = 4 and fm_score = 5) or (r_score = 5 and fm_score = 4) then 'Champions'
+when (r_score = 5 and fm_score = 2) or (r_score = 4 and fm_score = 2) or (r_score = 4 and fm_score = 3) or (r_score = 3 and fm_score = 3) then 'Potenial Loyalist'
+when (r_score = 5 and fm_score = 3) or (r_score = 4 and fm_score = 4) or (r_score = 3 and fm_score = 5) or (r_score = 3 and fm_score = 4) then 'Loyal Customer'
+when (r_score = 5 and fm_score = 1) then 'Recent Customers'
+when (r_score = 4 and fm_score = 1) or (r_score = 3 and fm_score = 1)  then 'Promising'
+when (r_score = 3 and fm_score = 2) or (r_score = 2 and fm_score = 3) or (r_score = 2 and fm_score = 2) then 'Customers Needing Attention'
+when (r_score = 2 and fm_score = 5) or (r_score = 2 and fm_score = 4) or (r_score = 1 and fm_score = 3) then 'At Risk'
+when (r_score = 1 and fm_score = 4) or (r_score = 1 and fm_score = 5)  then 'Can"t Lose Them'
+when (r_score = 1 and fm_score = 2) then 'Hybernating'
+when (r_score = 1 and fm_score = 1) then 'Lost'
+end cust_segment
+from t2;
+
+
+
+Q3)>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
+a)
+
+
+WITH source_cte AS (
+  SELECT 
+    cust_id, 
+    calendar_dt, 
+    LEAD(calendar_dt) OVER(ORDER BY cust_id, calendar_dt) AS lead_cal,
+    LEAD(calendar_dt) OVER(ORDER BY cust_id, calendar_dt) - calendar_dt AS streak,
+    CASE 
+      WHEN COALESCE(difference1, 2) != 1 THEN 'start new streak' 
+      WHEN difference2 != 1 THEN 'end streak' 
+      ELSE 'inside'  
+    END AS label
+  FROM (
+    SELECT 
+      cust_id, 
+      calendar_dt, 
+      LAG(calendar_dt) OVER(ORDER BY cust_id, calendar_dt) AS lagged_date,
+      calendar_dt - LAG(calendar_dt) OVER(ORDER BY cust_id, calendar_dt) AS difference1,
+      LEAD(calendar_dt) OVER(ORDER BY cust_id, calendar_dt) - calendar_dt AS difference2
+    FROM transactions
+  )
+  WHERE (difference2 != 1 OR COALESCE(difference1, 2) != 1)
+)
+
+SELECT DISTINCT 
+  cust_id, 
+  MAX(streak) OVER(PARTITION BY cust_id) AS max_streak
+FROM source_cte
+WHERE label = 'start new streak' AND streak > 0
+ORDER BY cust_id;
+
+
+
+b)
+
+
+SELECT DISTINCT ROUND(AVG(trans_count) OVER(),2) avg_tans_count
+from (SELECT DISTINCT cust_id, COUNT(*) OVER(PARTITION BY cust_id) + 1 AS trans_count
+FROM (
+    SELECT cust_id, calendar_dt,
+           SUM(AMT_LE) OVER(PARTITION BY cust_id ORDER BY calendar_dt) AS running_total
+    FROM transactions
+) t1
+WHERE running_total < 250 AND cust_id IN (
+    SELECT cust_id
+    FROM (
+        SELECT cust_id, calendar_dt,
+               SUM(AMT_LE) OVER(PARTITION BY cust_id ORDER BY calendar_dt) AS running_total
+        FROM transactions
+    ) t2
+    GROUP BY cust_id
+    HAVING MAX(running_total) >= 250
+));
